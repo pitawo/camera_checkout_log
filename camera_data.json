@@ -1,0 +1,46 @@
+{
+  "cameras": [
+    {
+      "id": 1,
+      "name": "Canon EOS R5",
+      "reservations": [
+        {
+          "user": "三宅",
+          "start_date": "2026/2/8",
+          "end_date": "2026/2/9",
+          "purpose": ""
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Sony α7IV",
+      "reservations": []
+    },
+    {
+      "id": 3,
+      "name": "Nikon Z6II",
+      "reservations": []
+    },
+    {
+      "id": 4,
+      "name": "GoPro Hero 11",
+      "reservations": []
+    },
+    {
+      "id": 5,
+      "name": "DJI Ronin-S",
+      "reservations": []
+    },
+    {
+      "id": 6,
+      "name": "HRO",
+      "reservations": []
+    },
+    {
+      "id": 7,
+      "name": "88",
+      "reservations": []
+    }
+  ]
+}

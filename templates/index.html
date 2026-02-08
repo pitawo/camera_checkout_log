@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LENS-SHARE Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 100;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-overlay.active {
+            display: flex;
+        }
+        .camera-item.selected {
+            background-color: #eef2ff !important;
+            border-color: #6366f1 !important;
+        }
+        .date-box {
+            position: relative;
+        }
+        .date-box input[type="text"] {
+            width: 100%;
+            padding-right: 36px;
+        }
+        .date-box input[type="date"] {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 24px;
+            height: 24px;
+            opacity: 0;
+            cursor: pointer;
+        }
+        .date-box .calendar-icon {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #6366f1;
+            pointer-events: none;
+        }
+        .camera-card {
+            min-height: 180px;
+            display: flex;
+            flex-direction: column;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .camera-card:hover {
+            transform: scale(1.02);
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+        }
+        .camera-card-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        .camera-card-body {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        .reservation-item {
+            border-left: 3px solid #6366f1;
+            padding-left: 12px;
+        }
+        .reservation-item.current {
+            border-left-color: #f43f5e;
+            background: #fef2f2;
+        }
+        .error-toast {
+            animation: slideIn 0.3s ease-out;
+        }
+        @keyframes slideIn {
+            from { transform: translateY(-100%); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+    </style>
+</head>
+<body class="bg-slate-50 font-sans text-slate-900">
+
+    <!-- エラーメッセージ -->
+    {% if error %}
+    <div id="errorToast" class="error-toast fixed top-20 left-1/2 transform -translate-x-1/2 bg-rose-500 text-white px-6 py-3 rounded-xl shadow-lg z-50">
+        <i class="fa-solid fa-exclamation-circle mr-2"></i>{{ error }}
+        <button onclick="document.getElementById('errorToast').remove()" class="ml-4 text-rose-200 hover:text-white">&times;</button>
+    </div>
+    {% endif %}
+
+    <nav class="bg-white border-b border-slate-200 px-8 py-4 flex justify-between items-center sticky top-0 z-50">
+        <h1 class="text-2xl font-black tracking-tighter text-indigo-600"><i class="fa-solid fa-camera-retro mr-2"></i>LENS-SHARE <span class="text-slate-400 font-light">PRO</span></h1>
+        <div class="flex gap-4 items-center">
+            <span id="availableCount" class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-bold">利用可能: {{ available }}台</span>
+            <span id="busyCount" class="bg-rose-100 text-rose-700 px-3 py-1 rounded-full text-sm font-bold">貸出中: {{ busy }}台</span>
+            <span id="totalCount" class="bg-slate-100 text-slate-700 px-3 py-1 rounded-full text-sm font-bold">総台数: {{ total }}台</span>
+            <button onclick="openSettings()" class="bg-slate-800 text-white px-4 py-2 rounded-lg text-sm hover:bg-black transition-colors">
+                <i class="fa-solid fa-gear mr-1"></i>設定
+            </button>
+        </div>
+    </nav>
+
+    <div class="max-w-6xl mx-auto p-8">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+            <div class="lg:col-span-1 space-y-6">
+                <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <h2 class="text-lg font-bold mb-4 flex items-center"><i class="fa-solid fa-pen-to-square mr-2 text-indigo-500"></i>予約申請</h2>
+                    <form action="/reserve" method="POST" class="space-y-4" id="reserveForm">
+                        <div>
+                            <label class="text-xs font-bold text-slate-500 uppercase">カメラを選択</label>
+                            <select name="cam_id" id="cameraSelect" required class="w-full border border-slate-200 rounded-lg p-2 focus:ring-2 focus:ring-indigo-500 outline-none mt-1">
+                                {% for cam in cameras %}
+                                <option value="{{ cam.id }}">{{ cam.name }}{% if cam.reservations|length > 0 %} (予約: {{ cam.reservations|length }}件){% endif %}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div>
+                            <label class="text-xs font-bold text-slate-500 uppercase">氏名</label>
+                            <input type="text" name="user" required placeholder="山田 太郎" class="w-full border border-slate-200 rounded-lg p-2 mt-1">
+                        </div>
+                        <div>
+                            <label class="text-xs font-bold text-slate-500 uppercase">利用期間</label>
+                            <div class="flex items-center gap-2 mt-1">
+                                <div class="date-box flex-1">
+                                    <input type="text" name="start_date" id="startDateText" required placeholder="1/15" class="border border-slate-200 rounded-lg p-2 text-center">
+                                    <i class="fa-solid fa-calendar calendar-icon"></i>
+                                    <input type="date" id="startDatePicker" onchange="setDateFromPicker('start')">
+                                </div>
+                                <span class="text-slate-400">～</span>
+                                <div class="date-box flex-1">
+                                    <input type="text" name="end_date" id="endDateText" required placeholder="1/20" class="border border-slate-200 rounded-lg p-2 text-center">
+                                    <i class="fa-solid fa-calendar calendar-icon"></i>
+                                    <input type="date" id="endDatePicker" onchange="setDateFromPicker('end')">
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-xs font-bold text-slate-500 uppercase">利用目的</label>
+                            <textarea name="purpose" placeholder="社内イベントの撮影など" class="w-full border border-slate-200 rounded-lg p-2 mt-1 text-sm" rows="2"></textarea>
+                        </div>
+                        <div id="formError" class="hidden text-rose-500 text-sm bg-rose-50 p-3 rounded-lg">
+                            <i class="fa-solid fa-exclamation-circle mr-1"></i><span id="formErrorText"></span>
+                        </div>
+                        <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-indigo-100">予約する</button>
+                    </form>
+                </div>
+            </div>
+
+            <div class="lg:col-span-2">
+                <h2 class="text-xl font-bold mb-6 flex items-center"><i class="fa-solid fa-chart-line mr-2 text-indigo-500"></i>リアルタイム稼働状況</h2>
+                <div id="cameraGrid" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {% for cam in cameras %}
+                    <div class="camera-card bg-white p-5 rounded-2xl shadow-sm border {{ 'border-l-8 border-l-green-400' if cam.status == '空き' else 'border-l-8 border-l-rose-400' }}"
+                         onclick="openDetailModal({{ cam.id }})" data-cam-id="{{ cam.id }}">
+                        <div class="camera-card-content">
+                            <div class="flex justify-between items-start mb-2">
+                                <h3 class="font-bold text-lg text-slate-800">{{ cam.name }}</h3>
+                                {% if cam.status == '空き' %}
+                                <span class="text-[10px] bg-green-50 text-green-600 font-black px-2 py-1 rounded">利用可能</span>
+                                {% else %}
+                                <span class="text-[10px] bg-rose-50 text-rose-600 font-black px-2 py-1 rounded">貸出中</span>
+                                {% endif %}
+                            </div>
+
+                            <div class="camera-card-body">
+                                {% set current = cam.reservations | selectattr('status', 'equalto', 'current') | first %}
+                                {% if current %}
+                                <div class="text-sm text-slate-600 space-y-1">
+                                    <p><i class="fa-solid fa-user mr-2 text-slate-400"></i>{{ current.user }}</p>
+                                    <p><i class="fa-solid fa-calendar mr-2 text-slate-400"></i>{{ current.period_display }}</p>
+                                    {% if current.purpose %}
+                                    <p><i class="fa-solid fa-clipboard mr-2 text-slate-400"></i>{{ current.purpose }}</p>
+                                    {% endif %}
+                                </div>
+                                {% set future_count = cam.reservations | selectattr('status', 'equalto', 'future') | list | length %}
+                                {% if future_count > 0 %}
+                                <p class="text-xs text-indigo-600 mt-2"><i class="fa-solid fa-clock mr-1"></i>他 {{ future_count }}件の予約あり</p>
+                                {% endif %}
+                                {% elif cam.reservations | length > 0 %}
+                                {% set next_res = cam.reservations | first %}
+                                <div class="text-sm text-slate-600 space-y-1">
+                                    <p class="text-indigo-600 font-medium"><i class="fa-solid fa-calendar-check mr-2"></i>次回予約</p>
+                                    <p><i class="fa-solid fa-user mr-2 text-slate-400"></i>{{ next_res.user }}</p>
+                                    <p><i class="fa-solid fa-calendar mr-2 text-slate-400"></i>{{ next_res.period_display }}</p>
+                                </div>
+                                {% else %}
+                                <p class="text-slate-400 text-sm italic text-center">利用可能</p>
+                                {% endif %}
+                            </div>
+
+                            <div class="text-xs text-slate-400 text-center mt-2">
+                                <i class="fa-solid fa-hand-pointer mr-1"></i>クリックで詳細
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- 詳細モーダル -->
+    <div id="detailModal" class="modal-overlay">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
+            <div id="detailModalHeader" class="bg-slate-800 text-white px-6 py-4 flex justify-between items-center">
+                <h3 class="font-bold text-lg"><i class="fa-solid fa-camera mr-2"></i><span id="detailCameraName"></span></h3>
+                <button onclick="closeDetailModal()" class="text-slate-300 hover:text-white text-xl">&times;</button>
+            </div>
+
+            <div class="p-6">
+                <div id="detailStatus" class="mb-4"></div>
+
+                <div id="reservationList" class="space-y-3 mb-6">
+                    <!-- 予約リストがここに入る -->
+                </div>
+
+                <div id="detailActions" class="flex gap-3">
+                    <!-- 返却ボタンがここに入る -->
+                </div>
+            </div>
+
+            <div class="bg-slate-50 px-6 py-4 flex justify-end">
+                <button onclick="closeDetailModal()" class="px-6 py-2 border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 設定モーダル -->
+    <div id="settingsModal" class="modal-overlay">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
+            <div class="bg-slate-800 text-white px-6 py-4 flex justify-between items-center">
+                <h3 class="font-bold text-lg"><i class="fa-solid fa-gear mr-2"></i>機材マスター設定</h3>
+                <button onclick="closeSettings()" class="text-slate-300 hover:text-white text-xl">&times;</button>
+            </div>
+
+            <div class="p-6 max-h-96 overflow-y-auto">
+                <div class="mb-6">
+                    <label class="text-xs font-bold text-slate-500 uppercase">新規機材を追加</label>
+                    <div class="flex gap-2 mt-2">
+                        <input type="text" id="newCameraName" placeholder="機材名を入力" class="flex-1 border border-slate-200 rounded-lg p-2 outline-none focus:ring-2 focus:ring-indigo-500">
+                        <button onclick="addCamera()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors">
+                            <i class="fa-solid fa-plus"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="text-xs font-bold text-slate-500 uppercase mb-2 block">登録済み機材</label>
+                    <div id="cameraList" class="space-y-2">
+                        {% for cam in cameras %}
+                        <div class="camera-item flex items-center justify-between p-3 border border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors" data-id="{{ cam.id }}" data-name="{{ cam.name }}" data-status="{{ cam.status }}">
+                            <span class="camera-name font-medium">{{ cam.name }}</span>
+                            {% if cam.status == '貸出中' %}
+                            <span class="text-xs bg-rose-100 text-rose-600 px-2 py-1 rounded">貸出中</span>
+                            {% else %}
+                            <span class="text-xs bg-green-100 text-green-600 px-2 py-1 rounded">空き</span>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div id="actionPanel" class="hidden mt-2 p-3 bg-indigo-50 border border-indigo-200 rounded-lg">
+                    <div class="flex gap-2">
+                        <button onclick="openRenameModal()" class="flex-1 bg-white border border-slate-300 text-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors text-xs font-medium">
+                            <i class="fa-solid fa-pen mr-1"></i>名前変更
+                        </button>
+                        <button id="deleteBtn" onclick="deleteSelected()" class="flex-1 bg-rose-500 text-white px-3 py-1.5 rounded-lg hover:bg-rose-600 transition-colors text-xs font-medium">
+                            <i class="fa-solid fa-trash mr-1"></i>削除
+                        </button>
+                    </div>
+                    <p id="deleteWarning" class="hidden text-xs text-rose-500 mt-2"><i class="fa-solid fa-exclamation-circle mr-1"></i>貸出中の機材は削除できません</p>
+                </div>
+            </div>
+
+            <div class="bg-slate-50 px-6 py-4 flex justify-end gap-3">
+                <button onclick="closeSettings()" class="px-6 py-2 border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 名前変更モーダル -->
+    <div id="renameModal" class="modal-overlay" style="z-index: 110;">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
+            <div class="bg-indigo-600 text-white px-6 py-4">
+                <h3 class="font-bold"><i class="fa-solid fa-pen mr-2"></i>名前を変更</h3>
+            </div>
+            <div class="p-6">
+                <input type="text" id="renameInput" class="w-full border border-slate-200 rounded-lg p-3 outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+            <div class="bg-slate-50 px-6 py-4 flex justify-end gap-3">
+                <button onclick="closeRenameModal()" class="px-4 py-2 border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors">キャンセル</button>
+                <button onclick="applyRename()" class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-bold">変更</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 非表示フォーム -->
+    <form id="addForm" action="/settings" method="POST" style="display:none;">
+        <input type="hidden" name="action" value="add">
+        <input type="hidden" name="new_name" id="addFormName">
+    </form>
+    <form id="deleteForm" action="/settings" method="POST" style="display:none;">
+        <input type="hidden" name="action" value="delete">
+        <input type="hidden" name="delete_id" id="deleteFormId">
+    </form>
+    <form id="renameForm" action="/settings" method="POST" style="display:none;">
+        <input type="hidden" name="action" value="rename">
+        <input type="hidden" name="rename_id" id="renameFormId">
+        <input type="hidden" name="rename_name" id="renameFormName">
+    </form>
+
+    <script>
+        // Socket.IO接続
+        const socket = io();
+        let camerasData = {{ cameras | tojson | safe }};
+
+        socket.on('connect', () => {
+            console.log('リアルタイム接続完了');
+        });
+
+        socket.on('data_updated', (data) => {
+            console.log('データ更新を受信', data);
+            camerasData = data.cameras;
+            updateUI(data);
+        });
+
+        function updateUI(data) {
+            // カウント更新
+            document.getElementById('availableCount').textContent = `利用可能: ${data.available}台`;
+            document.getElementById('busyCount').textContent = `貸出中: ${data.busy}台`;
+            document.getElementById('totalCount').textContent = `総台数: ${data.total}台`;
+
+            // カメラグリッド更新
+            const grid = document.getElementById('cameraGrid');
+            grid.innerHTML = data.cameras.map(cam => {
+                const current = cam.reservations.find(r => r.status === 'current');
+                const futureReservations = cam.reservations.filter(r => r.status === 'future');
+                const borderClass = cam.status === '空き' ? 'border-l-green-400' : 'border-l-rose-400';
+                const statusBadge = cam.status === '空き'
+                    ? '<span class="text-[10px] bg-green-50 text-green-600 font-black px-2 py-1 rounded">利用可能</span>'
+                    : '<span class="text-[10px] bg-rose-50 text-rose-600 font-black px-2 py-1 rounded">貸出中</span>';
+
+                let bodyContent = '';
+                if (current) {
+                    bodyContent = `
+                        <div class="text-sm text-slate-600 space-y-1">
+                            <p><i class="fa-solid fa-user mr-2 text-slate-400"></i>${current.user}</p>
+                            <p><i class="fa-solid fa-calendar mr-2 text-slate-400"></i>${current.period_display}</p>
+                            ${current.purpose ? `<p><i class="fa-solid fa-clipboard mr-2 text-slate-400"></i>${current.purpose}</p>` : ''}
+                        </div>
+                        ${futureReservations.length > 0 ? `<p class="text-xs text-indigo-600 mt-2"><i class="fa-solid fa-clock mr-1"></i>他 ${futureReservations.length}件の予約あり</p>` : ''}
+                    `;
+                } else if (cam.reservations.length > 0) {
+                    const nextRes = cam.reservations[0];
+                    bodyContent = `
+                        <div class="text-sm text-slate-600 space-y-1">
+                            <p class="text-indigo-600 font-medium"><i class="fa-solid fa-calendar-check mr-2"></i>次回予約</p>
+                            <p><i class="fa-solid fa-user mr-2 text-slate-400"></i>${nextRes.user}</p>
+                            <p><i class="fa-solid fa-calendar mr-2 text-slate-400"></i>${nextRes.period_display}</p>
+                        </div>
+                    `;
+                } else {
+                    bodyContent = '<p class="text-slate-400 text-sm italic text-center">利用可能</p>';
+                }
+
+                return `
+                    <div class="camera-card bg-white p-5 rounded-2xl shadow-sm border border-l-8 ${borderClass}"
+                         onclick="openDetailModal(${cam.id})" data-cam-id="${cam.id}">
+                        <div class="camera-card-content">
+                            <div class="flex justify-between items-start mb-2">
+                                <h3 class="font-bold text-lg text-slate-800">${cam.name}</h3>
+                                ${statusBadge}
+                            </div>
+                            <div class="camera-card-body">${bodyContent}</div>
+                            <div class="text-xs text-slate-400 text-center mt-2">
+                                <i class="fa-solid fa-hand-pointer mr-1"></i>クリックで詳細
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // セレクトボックス更新
+            const select = document.getElementById('cameraSelect');
+            select.innerHTML = data.cameras.map(cam => {
+                const reserveInfo = cam.reservations.length > 0 ? ` (予約: ${cam.reservations.length}件)` : '';
+                return `<option value="${cam.id}">${cam.name}${reserveInfo}</option>`;
+            }).join('');
+        }
+
+        // 詳細モーダル
+        function openDetailModal(camId) {
+            const cam = camerasData.find(c => c.id === camId);
+            if (!cam) return;
+
+            document.getElementById('detailCameraName').textContent = cam.name;
+
+            // ステータス表示
+            const statusHtml = cam.status === '空き'
+                ? '<span class="inline-block bg-green-100 text-green-700 px-4 py-2 rounded-full font-bold"><i class="fa-solid fa-check mr-2"></i>利用可能</span>'
+                : '<span class="inline-block bg-rose-100 text-rose-700 px-4 py-2 rounded-full font-bold"><i class="fa-solid fa-clock mr-2"></i>貸出中</span>';
+            document.getElementById('detailStatus').innerHTML = statusHtml;
+
+            // 予約リスト
+            const listEl = document.getElementById('reservationList');
+            if (cam.reservations.length === 0) {
+                listEl.innerHTML = '<p class="text-slate-400 text-sm">予約はありません</p>';
+            } else {
+                listEl.innerHTML = '<h4 class="text-sm font-bold text-slate-500 uppercase mb-3">予約一覧</h4>' +
+                    cam.reservations.map((r, i) => {
+                        const isCurrent = r.status === 'current';
+                        const statusLabel = isCurrent
+                            ? '<span class="text-xs bg-rose-500 text-white px-2 py-1 rounded">現在利用中</span>'
+                            : '<span class="text-xs bg-indigo-100 text-indigo-600 px-2 py-1 rounded">予約済み</span>';
+
+                        // ボタン（現在利用中なら返却、予約済みなら取消）
+                        const actionBtn = isCurrent
+                            ? `<a href="/return/${cam.id}" onclick="event.stopPropagation()" class="text-xs text-rose-500 hover:text-rose-700 hover:underline"><i class="fa-solid fa-rotate-left mr-1"></i>返却完了</a>`
+                            : `<a href="/cancel/${cam.id}?start=${encodeURIComponent(r.start_date)}&end=${encodeURIComponent(r.end_date)}" onclick="event.stopPropagation(); return confirm('この予約を取り消しますか？')" class="text-xs text-slate-500 hover:text-rose-500 hover:underline"><i class="fa-solid fa-times mr-1"></i>予約を取消</a>`;
+
+                        return `
+                            <div class="reservation-item ${isCurrent ? 'current' : ''} p-3 bg-slate-50 rounded-lg">
+                                <div class="flex justify-between items-start">
+                                    <div>
+                                        <p class="font-bold text-slate-800">${r.user}</p>
+                                        <p class="text-sm text-slate-500"><i class="fa-solid fa-calendar mr-1"></i>${r.period_display}</p>
+                                        ${r.purpose ? `<p class="text-sm text-slate-500"><i class="fa-solid fa-clipboard mr-1"></i>${r.purpose}</p>` : ''}
+                                    </div>
+                                    ${statusLabel}
+                                </div>
+                                <div class="mt-2 text-right">
+                                    ${actionBtn}
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+            }
+
+            // 下部のアクションエリアをクリア（各項目にボタンを移動したため）
+            document.getElementById('detailActions').innerHTML = '';
+
+            document.getElementById('detailModal').classList.add('active');
+        }
+
+        function closeDetailModal() {
+            document.getElementById('detailModal').classList.remove('active');
+        }
+
+        // カレンダーから日付を設定
+        function setDateFromPicker(type) {
+            let picker, textInput;
+            if (type === 'start') {
+                picker = document.getElementById('startDatePicker');
+                textInput = document.getElementById('startDateText');
+            } else {
+                picker = document.getElementById('endDatePicker');
+                textInput = document.getElementById('endDateText');
+            }
+
+            if (picker.value) {
+                const date = new Date(picker.value);
+                const month = date.getMonth() + 1;
+                const day = date.getDate();
+                textInput.value = month + '/' + day;
+            }
+        }
+
+        let selectedCamera = null;
+
+        function openSettings() {
+            document.getElementById('settingsModal').classList.add('active');
+            clearSelection();
+        }
+
+        function closeSettings() {
+            document.getElementById('settingsModal').classList.remove('active');
+            clearSelection();
+        }
+
+        function clearSelection() {
+            selectedCamera = null;
+            document.querySelectorAll('.camera-item').forEach(el => el.classList.remove('selected'));
+            const actionPanel = document.getElementById('actionPanel');
+            actionPanel.classList.add('hidden');
+            // アクションパネルを元の位置（cameraListの外）に戻す
+            document.querySelector('#settingsModal .p-6').appendChild(actionPanel);
+        }
+
+        function addCamera() {
+            const input = document.getElementById('newCameraName');
+            const name = input.value.trim();
+            if (!name) return;
+
+            document.getElementById('addFormName').value = name;
+            document.getElementById('addForm').submit();
+        }
+
+        document.getElementById('cameraList').addEventListener('click', function(e) {
+            const item = e.target.closest('.camera-item');
+            if (!item || !item.dataset.id) return;
+
+            // 同じアイテムをクリックしたら選択解除
+            if (selectedCamera && selectedCamera.id === item.dataset.id) {
+                clearSelection();
+                return;
+            }
+
+            document.querySelectorAll('.camera-item').forEach(el => el.classList.remove('selected'));
+            item.classList.add('selected');
+            selectedCamera = {
+                id: item.dataset.id,
+                name: item.dataset.name,
+                status: item.dataset.status
+            };
+
+            // アクションパネルを選択した項目の直後に挿入
+            const actionPanel = document.getElementById('actionPanel');
+            item.after(actionPanel);
+            actionPanel.classList.remove('hidden');
+
+            const deleteBtn = document.getElementById('deleteBtn');
+            const deleteWarning = document.getElementById('deleteWarning');
+            if (selectedCamera.status === '貸出中') {
+                deleteBtn.disabled = true;
+                deleteBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                deleteWarning.classList.remove('hidden');
+            } else {
+                deleteBtn.disabled = false;
+                deleteBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                deleteWarning.classList.add('hidden');
+            }
+        });
+
+        function deleteSelected() {
+            if (!selectedCamera || selectedCamera.status === '貸出中') return;
+            if (!confirm(selectedCamera.name + ' を削除しますか？')) return;
+
+            document.getElementById('deleteFormId').value = selectedCamera.id;
+            document.getElementById('deleteForm').submit();
+        }
+
+        function openRenameModal() {
+            if (!selectedCamera) return;
+            document.getElementById('renameInput').value = selectedCamera.name;
+            document.getElementById('renameModal').classList.add('active');
+        }
+
+        function closeRenameModal() {
+            document.getElementById('renameModal').classList.remove('active');
+        }
+
+        function applyRename() {
+            const newName = document.getElementById('renameInput').value.trim();
+            if (!newName || !selectedCamera) return;
+
+            document.getElementById('renameFormId').value = selectedCamera.id;
+            document.getElementById('renameFormName').value = newName;
+            document.getElementById('renameForm').submit();
+        }
+
+        // エラートーストを5秒後に自動で消す
+        setTimeout(() => {
+            const toast = document.getElementById('errorToast');
+            if (toast) toast.remove();
+        }, 5000);
+    </script>
+
+</body>
+</html>
